@@ -12,6 +12,12 @@ go install github.com/JohnDeved/myrient/cmd/myrient@latest
 
 This installs `myrient` into your Go bin directory (`$(go env GOPATH)/bin` by default).
 
+If `myrient` is not found after install, add Go bin to your PATH:
+
+```bash
+export PATH="$PATH:$(go env GOPATH)/bin"
+```
+
 ### Option 2: Build locally
 
 ```bash
