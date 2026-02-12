@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/JohnDeved/myrient-cli/internal/index"
@@ -17,6 +18,12 @@ type searchModel struct {
 	offset     int
 	height     int
 	searching  bool
+	startedAt  time.Time
+	loadingMsg string
+	loadingPath string
+	loadingDirs int64
+	loadingFiles int64
+	loadingErrors int64
 	err        error
 	lastQuery  string
 	totalFound int
@@ -41,12 +48,24 @@ func (s *searchModel) setResults(results []index.SearchResult) {
 	s.cursor = 0
 	s.offset = 0
 	s.searching = false
+	s.startedAt = time.Time{}
+	s.loadingMsg = ""
+	s.loadingPath = ""
+	s.loadingDirs = 0
+	s.loadingFiles = 0
+	s.loadingErrors = 0
 	s.err = nil
 }
 
 func (s *searchModel) setError(err error) {
 	s.err = err
 	s.searching = false
+	s.startedAt = time.Time{}
+	s.loadingMsg = ""
+	s.loadingPath = ""
+	s.loadingDirs = 0
+	s.loadingFiles = 0
+	s.loadingErrors = 0
 }
 
 func (s *searchModel) selected() *index.SearchResult {
@@ -127,8 +146,37 @@ func (s *searchModel) view(width int, spin string) string {
 	sb.WriteString("\n\n")
 
 	if s.searching {
-		sb.WriteString(fmt.Sprintf("  %s Searching...\n", spin))
-		return sb.String()
+		elapsed := ""
+		if !s.startedAt.IsZero() {
+			elapsed = fmt.Sprintf(" (%.0fs)", time.Since(s.startedAt).Seconds())
+		}
+		msg := s.loadingMsg
+		if msg == "" {
+			msg = "Searching local index (auto-indexing if needed)..."
+		}
+		sb.WriteString(fmt.Sprintf("  %s %s%s\n", spin, msg, elapsed))
+		if s.input.Value() != "" {
+			sb.WriteString(helpStyle.Render("  Query: " + s.input.Value()))
+			sb.WriteString("\n")
+		}
+		if s.loadingPath != "" {
+			sb.WriteString(helpStyle.Render("  Current Path:"))
+			sb.WriteString("\n")
+			sb.WriteString(helpStyle.Render("    " + util.TruncatePath(s.loadingPath, max(20, width-6))))
+			sb.WriteString("\n")
+		}
+		sb.WriteString(helpStyle.Render(fmt.Sprintf("  Indexed Dirs:  %d", s.loadingDirs)))
+		sb.WriteString("\n")
+		sb.WriteString(helpStyle.Render(fmt.Sprintf("  Indexed Files: %d", s.loadingFiles)))
+		sb.WriteString("\n")
+		sb.WriteString(helpStyle.Render(fmt.Sprintf("  Errors:        %d", s.loadingErrors)))
+		sb.WriteString("\n")
+		sb.WriteString(helpStyle.Render("  First-time/global searches can take a while while new directories are indexed."))
+		sb.WriteString("\n")
+		sb.WriteString("\n")
+		if len(s.results) == 0 {
+			return sb.String()
+		}
 	}
 
 	if s.err != nil {

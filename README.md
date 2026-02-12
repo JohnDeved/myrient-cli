@@ -48,6 +48,12 @@ For interactive browsing, run:
 myrient
 ```
 
+If your terminal has rendering/input issues, try:
+
+```bash
+myrient --no-alt-screen --no-mouse
+```
+
 ## Useful commands
 
 - `myrient ls <path> [--json] [--name-only] [--limit N]`

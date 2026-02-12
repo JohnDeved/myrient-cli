@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sync"
 	"strings"
 	"time"
 
@@ -39,6 +40,30 @@ type statusClearMsg struct{ id int }
 type searchResultsMsg struct {
 	results []index.SearchResult
 	query   string
+	autoIndexed bool
+	localCount  int
+	refreshWarn string
+}
+
+type searchProgressTickMsg struct{}
+
+type searchJob struct {
+	mu      sync.Mutex
+	results []index.SearchResult
+}
+
+func (j *searchJob) setResults(results []index.SearchResult) {
+	j.mu.Lock()
+	j.results = results
+	j.mu.Unlock()
+}
+
+func (j *searchJob) getResults() []index.SearchResult {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := make([]index.SearchResult, len(j.results))
+	copy(out, j.results)
+	return out
 }
 
 type downloadUpdateMsg struct{}
@@ -61,8 +86,14 @@ type Model struct {
 	statusMsg    string
 	statusID     int
 	quitConfirm  bool
-	batchConfirm bool
 	startPath    string
+	searchCrawler *index.Crawler
+	searchJob    *searchJob
+}
+
+type RunOptions struct {
+	AltScreen   bool
+	MouseMotion bool
 }
 
 // NewModel creates the TUI model.
@@ -83,6 +114,8 @@ func NewModel(c *client.Client, db *index.DB, cfg *config.Config, startPath stri
 		downloads: newDownloadsModel(),
 		spinner:   s,
 		startPath: startPath,
+		width:     100,
+		height:    30,
 	}
 
 	return m
@@ -129,6 +162,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case searchResultsMsg:
 		m.search.lastQuery = msg.query
 		m.search.setResults(msg.results)
+		m.searchCrawler = nil
+		m.searchJob = nil
+		if msg.refreshWarn != "" {
+			return m, m.setStatus(msg.refreshWarn)
+		}
+		if msg.autoIndexed {
+			if len(msg.results) > msg.localCount {
+				return m, m.setStatus(fmt.Sprintf("Refreshed index and found %d additional result(s)", len(msg.results)-msg.localCount))
+			}
+			if len(msg.results) > 0 {
+				return m, m.setStatus(fmt.Sprintf("Refreshed index, %d result(s) found", len(msg.results)))
+			}
+			return m, m.setStatus("Refreshed index, but no matches found")
+		}
 		return m, nil
 
 	case downloadUpdateMsg:
@@ -145,6 +192,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case searchProgressTickMsg:
+		if !m.search.searching {
+			return m, nil
+		}
+		if m.searchJob != nil {
+			live := m.searchJob.getResults()
+			if len(live) > 0 {
+				m.search.results = live
+				m.search.totalFound = len(live)
+				if m.search.cursor >= len(m.search.results) {
+					m.search.cursor = len(m.search.results) - 1
+					if m.search.cursor < 0 {
+						m.search.cursor = 0
+					}
+				}
+			}
+		}
+		if m.searchCrawler != nil {
+			p := m.searchCrawler.Progress()
+			if p.CurrentPath != "" {
+				m.search.loadingMsg = "Refreshing index..."
+				m.search.loadingPath = p.CurrentPath
+				m.search.loadingDirs = p.DirsProcessed
+				m.search.loadingFiles = p.FilesFound
+				m.search.loadingErrors = p.Errors
+			} else {
+				m.search.loadingMsg = "Preparing index refresh..."
+			}
+		}
+		return m, m.searchProgressTick()
 	}
 
 	// Pass through to search input if search tab is active.
@@ -190,6 +268,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// In browse view, plain character keys are reserved for filtering.
+	if m.activeTab == TabBrowse && isTypeAheadKey(key) {
+		return m.handleBrowseKey(key)
+	}
+
 	// Global keys.
 	switch key {
 	case "ctrl+c", "q":
@@ -220,36 +303,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "1":
-		if searchFocused {
-			return m.handleSearchKey(key, msg)
-		}
-		m.batchConfirm = false
-		m.activeTab = TabBrowse
-		m.search.input.Blur()
-		return m, nil
-
-	case "2":
-		if searchFocused {
-			return m.handleSearchKey(key, msg)
-		}
-		m.batchConfirm = false
-		m.activeTab = TabSearch
-		m.search.input.Focus()
-		return m, nil
-
-	case "3":
-		if searchFocused {
-			return m.handleSearchKey(key, msg)
-		}
-		m.batchConfirm = false
-		m.activeTab = TabDownloads
-		m.search.input.Blur()
-		m.downloads.setItems(m.dlManager.Items())
-		return m, nil
-
 	case "tab":
-		m.batchConfirm = false
 		m.search.input.Blur()
 		switch m.activeTab {
 		case TabBrowse:
@@ -264,7 +318,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "shift+tab":
-		m.batchConfirm = false
 		m.search.input.Blur()
 		switch m.activeTab {
 		case TabBrowse:
@@ -293,6 +346,27 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if msg.Button == tea.MouseButtonLeft {
+		if msg.Y == 1 {
+			if msg.X >= 0 && msg.X <= 10 {
+				m.activeTab = TabBrowse
+				m.search.input.Blur()
+				return m, nil
+			}
+			if msg.X >= 11 && msg.X <= 21 {
+				m.activeTab = TabSearch
+				m.search.input.Focus()
+				return m, nil
+			}
+			if msg.X >= 22 && msg.X <= 36 {
+				m.activeTab = TabDownloads
+				m.search.input.Blur()
+				m.downloads.setItems(m.dlManager.Items())
+				return m, nil
+			}
+		}
+	}
+
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
 		if m.showHelp {
@@ -331,34 +405,21 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleBrowseKey(key string) (tea.Model, tea.Cmd) {
-	if m.batchConfirm {
-		switch key {
-		case "y", "Y", "enter":
-			m.batchConfirm = false
-			return m.startMarkedDownloads(true)
-		case "n", "N", "esc":
-			m.batchConfirm = false
-			return m, m.setStatus("Batch download canceled")
-		default:
-			return m, nil
-		}
-	}
-
 	switch key {
-	case "up", "k":
+	case "up":
 		m.browser.moveUp()
-	case "down", "j":
+	case "down":
 		m.browser.moveDown()
 	case "pgup", "ctrl+u":
 		m.browser.pageUp()
 	case "pgdown", "ctrl+d":
 		m.browser.pageDown()
-	case "home", "g":
+	case "home":
 		m.browser.goHome()
-	case "end", "G":
+	case "end":
 		m.browser.goEnd()
 
-	case "enter", "l", "right":
+	case "enter", "right":
 		if sel := m.browser.selected(); sel != nil && sel.IsDir {
 			newPath := append([]string{}, m.browser.path...)
 			newPath = append(newPath, sel.Name)
@@ -369,7 +430,11 @@ func (m Model) handleBrowseKey(key string) (tea.Model, tea.Cmd) {
 			return m, m.enqueueDownload(sel.Name, sel.URL, subdir)
 		}
 
-	case "backspace", "h", "left":
+	case "backspace", "left":
+		if key == "backspace" && m.browser.filter != "" {
+			m.browser.backspaceFilter()
+			return m, nil
+		}
 		if len(m.browser.path) > 0 {
 			parentPath := ""
 			if len(m.browser.path) > 1 {
@@ -379,44 +444,22 @@ func (m Model) handleBrowseKey(key string) (tea.Model, tea.Cmd) {
 			return m, m.loadDirectory(parentPath)
 		}
 
-	case " ":
-		m.browser.toggleMark()
-		m.browser.moveDown()
-
-	case "d":
-		return m.startMarkedDownloads(false)
-
 	case "esc":
-		cleared := 0
-		for i := range m.browser.entries {
-			if m.browser.entries[i].Marked {
-				m.browser.entries[i].Marked = false
-				cleared++
-			}
-		}
-		if cleared > 0 {
-			return m, m.setStatus(fmt.Sprintf("Cleared %d marks", cleared))
-		}
-
-	case "a":
-		// Select all files.
-		for i := range m.browser.entries {
-			if !m.browser.entries[i].IsDir {
-				m.browser.entries[i].Marked = true
-			}
-		}
-
-	case "A":
-		// Clear all marks.
-		for i := range m.browser.entries {
-			if !m.browser.entries[i].IsDir {
-				m.browser.entries[i].Marked = false
-			}
+		if m.browser.filter != "" {
+			m.browser.clearFilter()
+			return m, m.setStatus("Filter cleared")
 		}
 
 	default:
 		if isTypeAheadKey(key) {
-			m.browser.typeAheadFind(key)
+			m.browser.appendFilter(key)
+			return m, nil
+		}
+		if key == "backspace" {
+			if m.browser.filter != "" {
+				m.browser.backspaceFilter()
+				return m, nil
+			}
 		}
 	}
 
@@ -427,10 +470,21 @@ func (m Model) handleSearchKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	if m.search.input.Focused() {
 		switch key {
 		case "enter":
+			if m.search.searching {
+				return m, nil
+			}
 			query := m.search.input.Value()
 			if query != "" {
 				m.search.searching = true
-				return m, m.performSearch(query)
+				m.search.startedAt = time.Now()
+				m.search.loadingMsg = "Searching local index..."
+				m.search.lastQuery = query
+				crawler := index.NewCrawler(m.client, m.db, m.cfg.IndexStaleDays)
+				crawler.SetForce(true)
+				m.searchCrawler = crawler
+				job := &searchJob{}
+				m.searchJob = job
+				return m, tea.Batch(m.performSearch(query, crawler, job), m.searchProgressTick())
 			}
 		case "esc":
 			m.search.input.Blur()
@@ -536,44 +590,6 @@ func (m Model) handleDownloadsKey(key string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) startMarkedDownloads(confirmed bool) (Model, tea.Cmd) {
-	marked := m.browser.markedEntries()
-	if len(marked) == 0 {
-		// Download current selection if it's a file.
-		if sel := m.browser.selected(); sel != nil && !sel.IsDir {
-			subdir := strings.Join(m.browser.path, "/")
-			return m, m.enqueueDownload(sel.Name, sel.URL, subdir)
-		}
-	} else {
-		if len(marked) > 1 && !confirmed {
-			m.batchConfirm = true
-			return m, m.setStatus(fmt.Sprintf("Download %d marked files? Press y to confirm, n to cancel", len(marked)))
-		}
-		subdir := strings.Join(m.browser.path, "/")
-		queued := 0
-		duplicates := 0
-		for _, e := range marked {
-			_, created := m.dlManager.Enqueue(e.Name, e.URL, subdir)
-			if created {
-				queued++
-			} else {
-				duplicates++
-			}
-		}
-		status := fmt.Sprintf("Queued %d files", queued)
-		if duplicates > 0 {
-			status = fmt.Sprintf("Queued %d files (%d already queued)", queued, duplicates)
-		}
-		cmd := m.setStatus(status)
-		// Clear marks.
-		for i := range m.browser.entries {
-			m.browser.entries[i].Marked = false
-		}
-		return m, cmd
-	}
-	return m, nil
-}
-
 // Commands
 
 func (m Model) loadDirectory(path string) tea.Cmd {
@@ -594,19 +610,51 @@ func (m Model) loadDirectory(path string) tea.Cmd {
 	}
 }
 
-func (m Model) performSearch(query string) tea.Cmd {
+func (m Model) performSearch(query string, crawler *index.Crawler, job *searchJob) tea.Cmd {
 	return func() tea.Msg {
 		if m.db == nil {
-			return searchResultsMsg{query: query}
+			return searchErrMsg{err: fmt.Errorf("index unavailable")}
+		}
+
+		localResults, err := m.db.Search(query, 100)
+		if err != nil {
+			return searchErrMsg{err: err}
+		}
+		job.setResults(localResults)
+
+		if err := crawler.CrawlAll(context.Background()); err != nil {
+			return searchResultsMsg{
+				results:     localResults,
+				query:       query,
+				localCount:  len(localResults),
+				refreshWarn: fmt.Sprintf("Index refresh failed, showing local results: %v", err),
+			}
 		}
 
 		results, err := m.db.Search(query, 100)
 		if err != nil {
-			return searchErrMsg{err: err}
+			return searchResultsMsg{
+				results:     localResults,
+				query:       query,
+				localCount:  len(localResults),
+				refreshWarn: fmt.Sprintf("Refreshed index, but search failed: %v", err),
+			}
 		}
+		job.setResults(results)
 
-		return searchResultsMsg{results: results, query: query}
+		return searchResultsMsg{
+			results:     results,
+			query:       query,
+			autoIndexed: true,
+			localCount:  len(localResults),
+		}
 	}
+}
+
+func (m Model) searchProgressTick() tea.Cmd {
+	return tea.Tick(30*time.Millisecond, func(time.Time) tea.Msg {
+		return searchProgressTickMsg{}
+	})
 }
 
 func (m Model) View() string {
@@ -625,16 +673,15 @@ func (m Model) View() string {
 	tabs := []struct {
 		name string
 		tab  Tab
-		key  string
 	}{
-		{"Browse", TabBrowse, "1"},
-		{"Search", TabSearch, "2"},
-		{"Downloads", TabDownloads, "3"},
+		{"Browse", TabBrowse},
+		{"Search", TabSearch},
+		{"Downloads", TabDownloads},
 	}
 
 	var tabLine strings.Builder
 	for _, t := range tabs {
-		label := fmt.Sprintf(" %s %s ", t.key, t.name)
+		label := fmt.Sprintf(" %s ", t.name)
 		if m.activeTab == t.tab {
 			tabLine.WriteString(tabActiveStyle.Render(label))
 		} else {
@@ -647,12 +694,6 @@ func (m Model) View() string {
 	dlCount := m.dlManager.ActiveCount()
 	if dlCount > 0 {
 		badge := successStyle.Render(fmt.Sprintf(" [%d active]", dlCount))
-		tabLine.WriteString(badge)
-	}
-
-	markedCount := m.browser.markedCount()
-	if markedCount > 0 && m.activeTab == TabBrowse {
-		badge := markedStyle.Render(fmt.Sprintf(" [%d marked]", markedCount))
 		tabLine.WriteString(badge)
 	}
 
@@ -689,12 +730,9 @@ func (m Model) View() string {
 }
 
 func (m Model) defaultStatus() string {
-	if m.activeTab == TabBrowse && m.batchConfirm {
-		return "Confirm batch download: y/Enter confirm, n/Esc cancel"
-	}
 	switch m.activeTab {
 	case TabBrowse:
-		return "j/k:navigate  Enter:open/download  type:jump  Space:mark  d:download  ?:help"
+		return "Arrows:navigate  Enter:open/download  type:filter  Backspace/Esc:clear filter  ?:help"
 	case TabSearch:
 		return "/:focus search  j/k:navigate results  Enter/d:download  b:open in browser  ?:help"
 	case TabDownloads:
@@ -709,21 +747,19 @@ func (m Model) helpView(maxLines int) string {
 		"  ──────────────────",
 		"",
 		"  Global:",
-		"    Tab / 1-3     Switch views",
+		"    Tab           Switch views",
 		"    Shift+Tab     Reverse view cycle",
 		"    ?             Toggle help",
 		"    q / Ctrl+C    Quit (double-press if downloads active)",
 		"",
 		"  Browser:",
-		"    j/k / Up/Down Navigate",
-		"    Enter / l     Open directory / queue file",
-		"    Backspace / h Go up",
-		"    Space         Mark/unmark file",
-		"    a / A         Mark all / clear marks",
-		"    d             Download marked/selected",
-		"    g / G         Go to top/bottom",
+		"    Up/Down       Navigate",
+		"    Enter         Open directory / queue file",
+		"    Backspace     Remove filter char / go up when filter empty",
+		"    Home/End      Go to top/bottom",
 		"    PgUp / PgDn   Page up/down",
-		"    type letters  Jump to name",
+		"    type letters  Filter entries",
+		"    Esc           Clear filter",
 		"",
 		"  Search:",
 		"    / or i        Focus search input",
@@ -806,21 +842,28 @@ func isTypeAheadKey(key string) bool {
 		return false
 	}
 	ch := r[0]
-	if ch < 32 || ch == ' ' {
+	if ch < 32 {
 		return false
 	}
 	return true
 }
 
 // Run starts the TUI.
-func Run(c *client.Client, db *index.DB, cfg *config.Config, startPath string) error {
+func Run(c *client.Client, db *index.DB, cfg *config.Config, startPath string, opts RunOptions) error {
 	m := NewModel(c, db, cfg, startPath)
 
 	// Wire up download change notifications.
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	programOpts := []tea.ProgramOption{}
+	if opts.AltScreen {
+		programOpts = append(programOpts, tea.WithAltScreen())
+	}
+	if opts.MouseMotion {
+		programOpts = append(programOpts, tea.WithMouseCellMotion())
+	}
+	p := tea.NewProgram(m, programOpts...)
 
 	m.dlManager.SetOnChange(func() {
-		p.Send(downloadUpdateMsg{})
+		go p.Send(downloadUpdateMsg{})
 	})
 
 	_, err := p.Run()

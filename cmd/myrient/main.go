@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +24,8 @@ import (
 	"github.com/JohnDeved/myrient-cli/internal/util"
 )
 
+var commit = "dev"
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "myrient",
@@ -31,6 +34,11 @@ func main() {
 from myrient.erista.me directly in your terminal.`,
 		RunE: runTUI,
 	}
+	rootCmd.Version = versionString()
+	rootCmd.SetVersionTemplate("{{.Version}}\n")
+	rootCmd.Flags().BoolP("version", "v", false, "Show version (git commit)")
+	rootCmd.PersistentFlags().Bool("no-alt-screen", false, "Run TUI without alternate screen mode")
+	rootCmd.PersistentFlags().Bool("no-mouse", false, "Run TUI without mouse motion tracking")
 
 	// Browse command
 	browseCmd := &cobra.Command{
@@ -121,6 +129,22 @@ from myrient.erista.me directly in your terminal.`,
 	}
 }
 
+func versionString() string {
+	if commit != "" && commit != "dev" {
+		return commit
+	}
+
+	if info, ok := debug.ReadBuildInfo(); ok {
+		for _, s := range info.Settings {
+			if s.Key == "vcs.revision" && s.Value != "" {
+				return s.Value
+			}
+		}
+	}
+
+	return "dev"
+}
+
 func runTUI(cmd *cobra.Command, args []string) error {
 	plainMode, _ := cmd.Flags().GetBool("plain")
 	jsonMode, _ := cmd.Flags().GetBool("json")
@@ -154,7 +178,13 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		startPath = args[0]
 	}
 
-	return tui.Run(c, db, cfg, startPath)
+	noAltScreen, _ := cmd.Flags().GetBool("no-alt-screen")
+	noMouse, _ := cmd.Flags().GetBool("no-mouse")
+
+	return tui.Run(c, db, cfg, startPath, tui.RunOptions{
+		AltScreen:   !noAltScreen,
+		MouseMotion: !noMouse,
+	})
 }
 
 func runList(cmd *cobra.Command, args []string) error {

@@ -102,6 +102,10 @@ var errCancelled = errors.New("cancelled")
 
 // NewManager creates a download manager.
 func NewManager(c *client.Client, downloadDir string, maxParallel int) *Manager {
+	if maxParallel <= 0 {
+		maxParallel = 1
+	}
+
 	return &Manager{
 		client:      c,
 		downloadDir: downloadDir,

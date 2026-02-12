@@ -32,6 +32,10 @@ type Client struct {
 
 // New creates a new Myrient client.
 func New(baseURL string, reqPerSec float64) *Client {
+	if reqPerSec <= 0 {
+		reqPerSec = 5.0
+	}
+
 	return &Client{
 		listHTTP: &http.Client{
 			Timeout: 30 * time.Second,

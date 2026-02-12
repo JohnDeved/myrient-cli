@@ -22,12 +22,76 @@ type browserModel struct {
 	cursor    int
 	path      []string // breadcrumb path segments
 	markCache map[string]map[string]bool
+	filter    string
 	typeAhead string
 	typedAt   time.Time
 	loading   bool
 	err       error
 	offset    int // viewport scroll offset
 	height    int // visible area height
+}
+
+func (b *browserModel) visibleIndices() []int {
+	indices := make([]int, 0, len(b.entries))
+	q := strings.ToLower(strings.TrimSpace(b.filter))
+	for i, e := range b.entries {
+		if q == "" || strings.Contains(strings.ToLower(e.Name), q) {
+			indices = append(indices, i)
+		}
+	}
+	return indices
+}
+
+func (b *browserModel) normalizeViewport(total int) {
+	if total <= 0 {
+		b.cursor = 0
+		b.offset = 0
+		return
+	}
+	if b.cursor < 0 {
+		b.cursor = 0
+	}
+	if b.cursor >= total {
+		b.cursor = total - 1
+	}
+	if b.offset < 0 {
+		b.offset = 0
+	}
+	if b.cursor < b.offset {
+		b.offset = b.cursor
+	}
+	if b.height > 0 && b.cursor >= b.offset+b.height {
+		b.offset = b.cursor - b.height + 1
+	}
+	maxOffset := total - b.height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if b.offset > maxOffset {
+		b.offset = maxOffset
+	}
+}
+
+func (b *browserModel) appendFilter(ch string) {
+	b.filter += strings.ToLower(ch)
+	b.cursor = 0
+	b.offset = 0
+}
+
+func (b *browserModel) backspaceFilter() {
+	if b.filter == "" {
+		return
+	}
+	r := []rune(b.filter)
+	b.filter = string(r[:len(r)-1])
+	b.cursor = 0
+	b.offset = 0
+}
+
+func (b *browserModel) clearFilter() {
+	b.filter = ""
+	b.cursor = 0
+	b.offset = 0
 }
 
 func (b *browserModel) typeAheadFind(key string) {
@@ -67,6 +131,8 @@ func newBrowserModel() browserModel {
 
 func (b *browserModel) setPathAndEntries(path []string, entries []client.Entry) {
 	b.persistMarks()
+	b.filter = ""
+	b.typeAhead = ""
 	b.path = path
 	b.setEntries(entries)
 }
@@ -133,13 +199,17 @@ func (b *browserModel) breadcrumb() string {
 }
 
 func (b *browserModel) selected() *browserEntry {
-	if b.cursor >= 0 && b.cursor < len(b.entries) {
-		return &b.entries[b.cursor]
+	visible := b.visibleIndices()
+	b.normalizeViewport(len(visible))
+	if b.cursor >= 0 && b.cursor < len(visible) {
+		return &b.entries[visible[b.cursor]]
 	}
 	return nil
 }
 
 func (b *browserModel) moveUp() {
+	visible := b.visibleIndices()
+	b.normalizeViewport(len(visible))
 	if b.cursor > 0 {
 		b.cursor--
 		if b.cursor < b.offset {
@@ -149,7 +219,9 @@ func (b *browserModel) moveUp() {
 }
 
 func (b *browserModel) moveDown() {
-	if b.cursor < len(b.entries)-1 {
+	visible := b.visibleIndices()
+	b.normalizeViewport(len(visible))
+	if b.cursor < len(visible)-1 {
 		b.cursor++
 		if b.cursor >= b.offset+b.height {
 			b.offset = b.cursor - b.height + 1
@@ -158,7 +230,8 @@ func (b *browserModel) moveDown() {
 }
 
 func (b *browserModel) pageUp() {
-	if len(b.entries) == 0 {
+	visible := b.visibleIndices()
+	if len(visible) == 0 {
 		b.cursor = 0
 		b.offset = 0
 		return
@@ -175,8 +248,8 @@ func (b *browserModel) pageUp() {
 	if b.cursor < 0 {
 		b.cursor = 0
 	}
-	if b.cursor >= len(b.entries) {
-		b.cursor = len(b.entries) - 1
+	if b.cursor >= len(visible) {
+		b.cursor = len(visible) - 1
 	}
 	if b.cursor < 0 {
 		b.cursor = 0
@@ -184,12 +257,18 @@ func (b *browserModel) pageUp() {
 }
 
 func (b *browserModel) pageDown() {
+	visible := b.visibleIndices()
+	if len(visible) == 0 {
+		b.cursor = 0
+		b.offset = 0
+		return
+	}
 	if b.height <= 0 {
 		return
 	}
 	rel := b.cursor - b.offset
 	b.offset += b.height
-	maxOffset := len(b.entries) - b.height
+	maxOffset := len(visible) - b.height
 	if maxOffset < 0 {
 		maxOffset = 0
 	}
@@ -197,8 +276,8 @@ func (b *browserModel) pageDown() {
 		b.offset = maxOffset
 	}
 	b.cursor = b.offset + rel
-	if b.cursor >= len(b.entries) {
-		b.cursor = len(b.entries) - 1
+	if b.cursor >= len(visible) {
+		b.cursor = len(visible) - 1
 	}
 	if b.cursor < 0 {
 		b.cursor = 0
@@ -211,7 +290,8 @@ func (b *browserModel) goHome() {
 }
 
 func (b *browserModel) goEnd() {
-	b.cursor = len(b.entries) - 1
+	visible := b.visibleIndices()
+	b.cursor = len(visible) - 1
 	if b.cursor < 0 {
 		b.cursor = 0
 	}
@@ -275,15 +355,28 @@ func (b *browserModel) view(width int, spin string) string {
 		return sb.String()
 	}
 
+	if b.filter != "" {
+		sb.WriteString(helpStyle.Render(fmt.Sprintf("  Filter: %q", b.filter)))
+		sb.WriteString("\n")
+	}
+
+	visible := b.visibleIndices()
+	b.normalizeViewport(len(visible))
+	if len(visible) == 0 {
+		sb.WriteString(helpStyle.Render("  No matches for current filter."))
+		sb.WriteString("\n")
+		return sb.String()
+	}
+
 	// Calculate visible range.
 	end := b.offset + b.height
-	if end > len(b.entries) {
-		end = len(b.entries)
+	if end > len(visible) {
+		end = len(visible)
 	}
 
 	// Render entries.
 	for i := b.offset; i < end; i++ {
-		e := b.entries[i]
+		e := b.entries[visible[i]]
 		isSelected := i == b.cursor
 
 		// Build the line.
@@ -297,13 +390,7 @@ func (b *browserModel) view(width int, spin string) string {
 			displayName = fileStyle.Render(truncateText(e.Name, max(12, width-35)))
 		}
 
-		markIndicator := "  "
-		if e.Marked {
-			markIndicator = markedStyle.Render("* ")
-		}
-
-		line := fmt.Sprintf("%s%s%s  %s  %s",
-			markIndicator,
+		line := fmt.Sprintf("  %s%s  %s  %s",
 			icon,
 			displayName,
 			sizeStyle.Render(e.Size),
@@ -321,10 +408,10 @@ func (b *browserModel) view(width int, spin string) string {
 	}
 
 	// Scroll indicator.
-	if len(b.entries) > b.height {
-		pct := float64(b.offset) / float64(len(b.entries)-b.height) * 100
+	if len(visible) > b.height {
+		pct := float64(b.offset) / float64(len(visible)-b.height) * 100
 		sb.WriteString(helpStyle.Render(
-			fmt.Sprintf("  %d/%d items (%.0f%%)", b.cursor+1, len(b.entries), pct),
+			fmt.Sprintf("  %d/%d items (%.0f%%)", b.cursor+1, len(visible), pct),
 		))
 		sb.WriteString("\n")
 	}
