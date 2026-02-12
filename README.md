@@ -4,6 +4,14 @@ Fast CLI + TUI client for browsing, searching, indexing, and downloading from My
 
 ## Install
 
+### Option 0: One-liner installer (easiest)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/JohnDeved/myrient-cli/main/scripts/install.sh | bash
+```
+
+This installs `myrient` and prints clear PATH guidance if needed.
+
 ### Option 1: `go install` (recommended)
 
 ```bash
