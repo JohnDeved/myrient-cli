@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/JohnDeved/myrient/internal/client"
-	"github.com/JohnDeved/myrient/internal/util"
+	"github.com/JohnDeved/myrient-cli/internal/client"
+	"github.com/JohnDeved/myrient-cli/internal/util"
 )
 
 // browserEntry is a client.Entry plus local state.

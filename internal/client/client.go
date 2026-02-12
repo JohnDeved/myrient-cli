@@ -67,7 +67,7 @@ func (c *Client) ListDirectory(ctx context.Context, dirPath string) ([]Entry, er
 	if err != nil {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
-	req.Header.Set("User-Agent", "myrient-tui/1.0")
+	req.Header.Set("User-Agent", "myrient-cli/1.0")
 	req.Header.Set("Referer", dirURL)
 
 	resp, err := c.listHTTP.Do(req)
@@ -98,7 +98,7 @@ func (c *Client) DownloadFile(ctx context.Context, fileURL string, resumeFrom in
 	if err != nil {
 		return nil, 0, false, err
 	}
-	req.Header.Set("User-Agent", "myrient-tui/1.0")
+	req.Header.Set("User-Agent", "myrient-cli/1.0")
 	req.Header.Set("Referer", referer)
 
 	if resumeFrom > 0 {

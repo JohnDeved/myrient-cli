@@ -1,4 +1,4 @@
-/myrient
+/myrient-cli
 dist/
 build/
 *.log

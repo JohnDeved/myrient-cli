@@ -15,17 +15,17 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/JohnDeved/myrient/internal/client"
-	"github.com/JohnDeved/myrient/internal/config"
-	"github.com/JohnDeved/myrient/internal/downloader"
-	"github.com/JohnDeved/myrient/internal/index"
-	"github.com/JohnDeved/myrient/internal/tui"
-	"github.com/JohnDeved/myrient/internal/util"
+	"github.com/JohnDeved/myrient-cli/internal/client"
+	"github.com/JohnDeved/myrient-cli/internal/config"
+	"github.com/JohnDeved/myrient-cli/internal/downloader"
+	"github.com/JohnDeved/myrient-cli/internal/index"
+	"github.com/JohnDeved/myrient-cli/internal/tui"
+	"github.com/JohnDeved/myrient-cli/internal/util"
 )
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "myrient",
+		Use:   "myrient-cli",
 		Short: "A TUI client for browsing and downloading from Myrient",
 		Long: `Myrient TUI - Browse, search, and download video game preservation content
 from myrient.erista.me directly in your terminal.`,
@@ -328,7 +328,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		}
 
 		fmt.Println("No results found.")
-		fmt.Println("Tip: Run 'myrient index' to build the search index first.")
+		fmt.Println("Tip: Run 'myrient-cli index' to build the search index first.")
 		return nil
 	}
 

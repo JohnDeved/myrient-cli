@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/JohnDeved/myrient/internal/index"
-	"github.com/JohnDeved/myrient/internal/util"
+	"github.com/JohnDeved/myrient-cli/internal/index"
+	"github.com/JohnDeved/myrient-cli/internal/util"
 )
 
 // searchModel manages the search view.
@@ -143,7 +143,7 @@ func (s *searchModel) view(width int, spin string) string {
 	}
 
 	if len(s.results) == 0 {
-		sb.WriteString(helpStyle.Render("  Type to search the local index. Run 'myrient index' to build it.\n"))
+		sb.WriteString(helpStyle.Render("  Type to search the local index. Run 'myrient-cli index' to build it.\n"))
 		return sb.String()
 	}
 

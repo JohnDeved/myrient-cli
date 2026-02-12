@@ -10,10 +10,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/JohnDeved/myrient/internal/client"
-	"github.com/JohnDeved/myrient/internal/config"
-	"github.com/JohnDeved/myrient/internal/downloader"
-	"github.com/JohnDeved/myrient/internal/index"
+	"github.com/JohnDeved/myrient-cli/internal/client"
+	"github.com/JohnDeved/myrient-cli/internal/config"
+	"github.com/JohnDeved/myrient-cli/internal/downloader"
+	"github.com/JohnDeved/myrient-cli/internal/index"
 )
 
 // Tab identifies the active view.
