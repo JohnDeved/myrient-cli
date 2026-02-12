@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/johannberger/myrient/internal/client"
+	"github.com/JohnDeved/myrient/internal/client"
 )
 
 // Status represents a download's state.

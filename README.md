@@ -7,7 +7,7 @@ Fast CLI + TUI client for browsing, searching, indexing, and downloading from My
 ### Option 1: `go install` (recommended)
 
 ```bash
-go install github.com/johannberger/myrient/cmd/myrient@latest
+go install github.com/JohnDeved/myrient/cmd/myrient@latest
 ```
 
 This installs `myrient` into your Go bin directory (`$(go env GOPATH)/bin` by default).
@@ -15,7 +15,7 @@ This installs `myrient` into your Go bin directory (`$(go env GOPATH)/bin` by de
 ### Option 2: Build locally
 
 ```bash
-git clone https://github.com/johannberger/myrient.git
+git clone https://github.com/JohnDeved/myrient.git
 cd myrient
 make install
 ```

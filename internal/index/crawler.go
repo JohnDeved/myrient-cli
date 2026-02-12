@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/johannberger/myrient/internal/client"
+	"github.com/JohnDeved/myrient/internal/client"
 )
 
 // CrawlProgress reports crawl progress.

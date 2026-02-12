@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/johannberger/myrient/internal/downloader"
-	"github.com/johannberger/myrient/internal/util"
+	"github.com/JohnDeved/myrient/internal/downloader"
+	"github.com/JohnDeved/myrient/internal/util"
 )
 
 // downloadsModel manages the downloads view.

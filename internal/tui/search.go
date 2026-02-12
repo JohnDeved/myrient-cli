@@ -5,8 +5,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/johannberger/myrient/internal/index"
-	"github.com/johannberger/myrient/internal/util"
+	"github.com/JohnDeved/myrient/internal/index"
+	"github.com/JohnDeved/myrient/internal/util"
 )
 
 // searchModel manages the search view.

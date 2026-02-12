@@ -1,4 +1,4 @@
-module github.com/johannberger/myrient
+module github.com/JohnDeved/myrient
 
 go 1.25.0
 
