@@ -1,0 +1,7 @@
+/myrient
+dist/
+build/
+*.log
+*.tmp
+*.part
+.DS_Store
