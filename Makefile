@@ -1,5 +1,5 @@
-APP := myrient-cli
-CMD := ./cmd/myrient-cli
+APP := myrient
+CMD := ./cmd/myrient
 
 .PHONY: build install test clean
 

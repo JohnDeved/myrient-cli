@@ -25,7 +25,7 @@ import (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "myrient-cli",
+		Use:   "myrient",
 		Short: "A TUI client for browsing and downloading from Myrient",
 		Long: `Myrient TUI - Browse, search, and download video game preservation content
 from myrient.erista.me directly in your terminal.`,
@@ -328,7 +328,7 @@ func runSearch(cmd *cobra.Command, args []string) error {
 		}
 
 		fmt.Println("No results found.")
-		fmt.Println("Tip: Run 'myrient-cli index' to build the search index first.")
+		fmt.Println("Tip: Run 'myrient index' to build the search index first.")
 		return nil
 	}
 
