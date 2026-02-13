@@ -67,3 +67,9 @@ func TestParseDirectoryListing_AcceptsAbsoluteSameHostChild(t *testing.T) {
 		t.Fatalf("unexpected entry: %+v", entries[0])
 	}
 }
+
+func TestIsLikelyListingEntryURL_PathBoundary(t *testing.T) {
+	if isLikelyListingEntryURL("https://example.com/files/", "https://example.com/filesomething/dir/") {
+		t.Fatal("expected sibling path prefix lookalike to be rejected")
+	}
+}

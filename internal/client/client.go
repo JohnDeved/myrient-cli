@@ -339,11 +339,17 @@ func isLikelyListingEntryURL(dirURL, fullURL string) bool {
 	if base.Host != "" && target.Host != "" && !strings.EqualFold(base.Host, target.Host) {
 		return false
 	}
-	basePath := base.Path
-	if !strings.HasSuffix(basePath, "/") {
-		basePath += "/"
+	basePath := strings.TrimRight(base.Path, "/")
+	if basePath == "" {
+		return strings.HasPrefix(target.Path, "/")
 	}
-	return strings.HasPrefix(target.Path, basePath)
+	if !strings.HasPrefix(target.Path, basePath) {
+		return false
+	}
+	if len(target.Path) == len(basePath) {
+		return true
+	}
+	return target.Path[len(basePath)] == '/'
 }
 
 // findLink finds the first <a> tag in a node tree and returns (href, text).
