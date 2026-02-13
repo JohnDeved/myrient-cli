@@ -239,7 +239,7 @@ func parseAnchorLink(a *html.Node, dirURL string) (Entry, bool) {
 	if strings.HasPrefix(link, "#") || strings.HasPrefix(link, "?") {
 		return Entry{}, false
 	}
-	if strings.HasPrefix(strings.ToLower(link), "javascript:") {
+	if hasUnsafeScheme(link) {
 		return Entry{}, false
 	}
 	if name == "" {
@@ -248,8 +248,7 @@ func parseAnchorLink(a *html.Node, dirURL string) (Entry, bool) {
 	if name == "" || name == "." || name == ".." || link == "../" || link == "./" {
 		return Entry{}, false
 	}
-	if strings.EqualFold(strings.TrimSpace(name), "Parent Directory") ||
-		strings.EqualFold(strings.TrimSpace(name), "Parent directory/") {
+	if strings.EqualFold(strings.TrimSpace(name), "Parent Directory") {
 		return Entry{}, false
 	}
 	name = strings.TrimSuffix(name, "/")
@@ -295,6 +294,19 @@ func pathBase(link string) string {
 		return path[i+1:]
 	}
 	return path
+}
+
+func hasUnsafeScheme(link string) bool {
+	u, err := url.Parse(link)
+	if err != nil {
+		return true
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "javascript", "data", "vbscript":
+		return true
+	default:
+		return false
+	}
 }
 
 // findLink finds the first <a> tag in a node tree and returns (href, text).

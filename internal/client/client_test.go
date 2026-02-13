@@ -30,6 +30,7 @@ func TestParseDirectoryListing_PreListingFallback(t *testing.T) {
 <html><body><pre>
 <a href="?C=N;O=D">Name</a>
 <a href="../">Parent Directory</a>
+<a href="data:text/html;base64,SGVsbG8=">bad</a>
 <a href="Folder/">Folder/</a>
 <a href="file%20name.zip">file name.zip</a>
 </pre></body></html>`
