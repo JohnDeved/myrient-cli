@@ -170,7 +170,7 @@ func sanitizeFTS5Query(query string) string {
 
 // UpsertCollection inserts or updates a collection and returns its ID.
 func (d *DB) UpsertCollection(name, path, description string) (int64, error) {
-	res, err := d.db.Exec(
+	_, err := d.db.Exec(
 		`INSERT INTO collections (name, path, description) VALUES (?, ?, ?)
 		 ON CONFLICT(name) DO UPDATE SET path=excluded.path, description=excluded.description`,
 		name, path, description,
@@ -179,13 +179,10 @@ func (d *DB) UpsertCollection(name, path, description string) (int64, error) {
 		return 0, err
 	}
 
-	// If the row was updated (not inserted), we need to fetch the ID.
-	id, err := res.LastInsertId()
-	if err != nil || id == 0 {
-		row := d.db.QueryRow("SELECT id FROM collections WHERE name = ?", name)
-		if err := row.Scan(&id); err != nil {
-			return 0, err
-		}
+	var id int64
+	row := d.db.QueryRow("SELECT id FROM collections WHERE name = ?", name)
+	if err := row.Scan(&id); err != nil {
+		return 0, err
 	}
 	return id, nil
 }
@@ -211,7 +208,7 @@ func (d *DB) GetCollections() ([]Collection, error) {
 
 // UpsertDirectory inserts or updates a directory and returns its ID.
 func (d *DB) UpsertDirectory(path string, collectionID int64) (int64, error) {
-	res, err := d.db.Exec(
+	_, err := d.db.Exec(
 		`INSERT INTO directories (path, collection_id) VALUES (?, ?)
 		 ON CONFLICT(path) DO UPDATE SET collection_id=excluded.collection_id`,
 		path, collectionID,
@@ -219,12 +216,11 @@ func (d *DB) UpsertDirectory(path string, collectionID int64) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	id, err := res.LastInsertId()
-	if err != nil || id == 0 {
-		row := d.db.QueryRow("SELECT id FROM directories WHERE path = ?", path)
-		if err := row.Scan(&id); err != nil {
-			return 0, err
-		}
+
+	var id int64
+	row := d.db.QueryRow("SELECT id FROM directories WHERE path = ?", path)
+	if err := row.Scan(&id); err != nil {
+		return 0, err
 	}
 	return id, nil
 }
@@ -333,7 +329,10 @@ func (d *DB) Search(query string, limit int) ([]SearchResult, error) {
 		}
 		results = append(results, r)
 	}
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return dedupeSearchResults(results), nil
 }
 
 // SearchInCollection performs FTS search filtered by collection.
@@ -374,7 +373,27 @@ func (d *DB) SearchInCollection(query string, collectionName string, limit int) 
 		}
 		results = append(results, r)
 	}
-	return results, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return dedupeSearchResults(results), nil
+}
+
+func dedupeSearchResults(results []SearchResult) []SearchResult {
+	if len(results) < 2 {
+		return results
+	}
+	seen := make(map[string]bool, len(results))
+	uniq := make([]SearchResult, 0, len(results))
+	for _, r := range results {
+		k := r.URL + "|" + r.Path + "|" + r.Name + "|" + r.Size + "|" + r.Date
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		uniq = append(uniq, r)
+	}
+	return uniq
 }
 
 // Stats returns index statistics.
