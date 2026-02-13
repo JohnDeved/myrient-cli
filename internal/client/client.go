@@ -224,6 +224,9 @@ func parseTableRow(tr *html.Node, dirURL string) (Entry, bool) {
 	if err != nil {
 		return Entry{}, false
 	}
+	if !isLikelyListingEntryURL(dirURL, fullURL) {
+		return Entry{}, false
+	}
 
 	sizeText := ""
 	dateText := ""
@@ -269,6 +272,9 @@ func parseAnchorLink(a *html.Node, dirURL string) (Entry, bool) {
 	}
 	fullURL, err := resolveURL(dirURL, link)
 	if err != nil {
+		return Entry{}, false
+	}
+	if !isLikelyListingEntryURL(dirURL, fullURL) {
 		return Entry{}, false
 	}
 	return Entry{
@@ -319,6 +325,28 @@ func hasUnsafeScheme(link string) bool {
 	default:
 		return false
 	}
+}
+
+func isLikelyListingEntryURL(dirURL, fullURL string) bool {
+	base, err := url.Parse(dirURL)
+	if err != nil {
+		return false
+	}
+	target, err := url.Parse(fullURL)
+	if err != nil {
+		return false
+	}
+	if base.Host != "" && target.Host != "" && !strings.EqualFold(base.Host, target.Host) {
+		return false
+	}
+	basePath := base.Path
+	if !strings.HasSuffix(basePath, "/") {
+		basePath += "/"
+	}
+	if target.Path == basePath {
+		return false
+	}
+	return strings.HasPrefix(target.Path, basePath)
 }
 
 // findLink finds the first <a> tag in a node tree and returns (href, text).
