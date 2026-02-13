@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"strings"
@@ -89,6 +90,7 @@ type Model struct {
 	startPath    string
 	searchCrawler *index.Crawler
 	searchJob    *searchJob
+	searchLastRefresh time.Time
 }
 
 type RunOptions struct {
@@ -164,6 +166,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.search.setResults(msg.results)
 		m.searchCrawler = nil
 		m.searchJob = nil
+		if msg.autoIndexed {
+			m.searchLastRefresh = time.Now()
+		}
 		if msg.refreshWarn != "" {
 			return m, m.setStatus(msg.refreshWarn)
 		}
@@ -208,7 +213,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.searchCrawler != nil {
 			p := m.searchCrawler.Progress()
 			if p.CurrentPath != "" {
-				m.search.loadingMsg = "Refreshing index..."
+				m.search.loadingMsg = "Refreshing stale/unindexed paths..."
 				m.search.loadingPath = p.CurrentPath
 				m.search.loadingDirs = p.DirsProcessed
 				m.search.loadingFiles = p.FilesFound
@@ -480,11 +485,12 @@ func (m Model) handleSearchKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 				m.search.loadingErrors = 0
 				m.search.input.Blur()
 				crawler := index.NewCrawler(m.client, m.db, m.cfg.IndexStaleDays)
-				crawler.SetForce(true)
+				crawler.SetForce(false)
+				crawler.SetWorkers(8)
 				m.searchCrawler = crawler
 				job := &searchJob{}
 				m.searchJob = job
-				started := m.setStatus("Search started: local results first, then full index refresh")
+				started := m.setStatus("Search started: local results first, then targeted stale refresh")
 				return m, tea.Batch(started, m.performSearch(query, crawler, job), m.searchProgressTick())
 			}
 		case "up", "down", "pgup", "pgdown":
@@ -631,12 +637,33 @@ func (m Model) performSearch(query string, crawler *index.Crawler, job *searchJo
 		}
 		job.setResults(localResults)
 
-		if err := crawler.CrawlAll(context.Background()); err != nil {
+		if len(localResults) >= 25 && !m.searchLastRefresh.IsZero() && time.Since(m.searchLastRefresh) < 2*time.Minute {
 			return searchResultsMsg{
 				results:     localResults,
 				query:       query,
 				localCount:  len(localResults),
-				refreshWarn: fmt.Sprintf("Index refresh failed, showing local results: %v", err),
+				refreshWarn: "Using recent index snapshot for speed",
+			}
+		}
+
+		budget := 40 * time.Second
+		if len(localResults) > 0 {
+			budget = 15 * time.Second
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), budget)
+		defer cancel()
+
+		collections := chooseSearchRefreshCollections(m.db, query, localResults)
+		if err := crawlSelectedCollections(ctx, crawler, collections); err != nil {
+			warn := fmt.Sprintf("Index refresh failed, showing local results: %v", err)
+			if errors.Is(err, context.DeadlineExceeded) {
+				warn = "Index refresh timed out, showing best available results"
+			}
+			return searchResultsMsg{
+				results:     localResults,
+				query:       query,
+				localCount:  len(localResults),
+				refreshWarn: warn,
 			}
 		}
 
@@ -658,6 +685,79 @@ func (m Model) performSearch(query string, crawler *index.Crawler, job *searchJo
 			localCount:  len(localResults),
 		}
 	}
+}
+
+func chooseSearchRefreshCollections(db *index.DB, query string, local []index.SearchResult) []string {
+	seen := map[string]bool{}
+	ordered := make([]string, 0, 8)
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		ordered = append(ordered, name)
+	}
+
+	for _, r := range local {
+		add(r.CollectionName)
+	}
+
+	cols, err := db.GetCollections()
+	if err == nil {
+		tokens := strings.Fields(strings.ToLower(query))
+		for _, c := range cols {
+			lc := strings.ToLower(c.Name)
+			for _, t := range tokens {
+				if len(t) < 2 {
+					continue
+				}
+				if strings.Contains(lc, t) {
+					add(c.Name)
+					break
+				}
+			}
+		}
+	}
+
+	q := strings.ToLower(query)
+	if strings.Contains(q, "3ds") || strings.Contains(q, "ds") || strings.Contains(q, "pokemon") || strings.Contains(q, "zelda") || strings.Contains(q, "mario") {
+		add("No-Intro")
+	}
+	if strings.Contains(q, "arcade") || strings.Contains(q, "mame") {
+		add("MAME")
+		add("FinalBurn Neo")
+	}
+	if strings.Contains(q, "dos") || strings.Contains(q, "pc") {
+		add("Total DOS Collection")
+	}
+
+	if len(ordered) == 0 {
+		add("No-Intro")
+	}
+	if len(ordered) > 4 {
+		ordered = ordered[:4]
+	}
+	return ordered
+}
+
+func crawlSelectedCollections(ctx context.Context, crawler *index.Crawler, collections []string) error {
+	if len(collections) == 0 {
+		return crawler.CrawlAll(ctx)
+	}
+
+	var firstErr error
+	for _, col := range collections {
+		if err := crawler.CrawlCollection(ctx, col); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 func (m Model) searchProgressTick() tea.Cmd {
