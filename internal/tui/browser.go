@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -34,11 +35,29 @@ type browserModel struct {
 func (b *browserModel) visibleIndices() []int {
 	indices := make([]int, 0, len(b.entries))
 	q := strings.ToLower(strings.TrimSpace(b.filter))
+
+	if q == "" {
+		for i := range b.entries {
+			indices = append(indices, i)
+		}
+		return indices
+	}
+
 	for i, e := range b.entries {
 		if q == "" || fuzzyMatch(q, e.Name) {
 			indices = append(indices, i)
 		}
 	}
+
+	sort.SliceStable(indices, func(i, j int) bool {
+		si := fuzzyScore(q, b.entries[indices[i]].Name)
+		sj := fuzzyScore(q, b.entries[indices[j]].Name)
+		if si == sj {
+			return indices[i] < indices[j]
+		}
+		return si > sj
+	})
+
 	return indices
 }
 
@@ -81,6 +100,41 @@ func isSubsequence(needle, haystack string) bool {
 		}
 	}
 	return j == len(n)
+}
+
+func fuzzyScore(query, target string) int {
+	query = strings.ToLower(strings.TrimSpace(query))
+	target = strings.ToLower(target)
+	if query == "" {
+		return 0
+	}
+
+	score := 0
+	tokens := strings.Fields(query)
+	matched := 0
+
+	for _, tok := range tokens {
+		if tok == "" {
+			continue
+		}
+		if strings.Contains(target, tok) {
+			score += 80
+			matched++
+			continue
+		}
+		if isSubsequence(tok, target) {
+			score += 20
+		}
+	}
+
+	if matched == len(tokens) && len(tokens) > 0 {
+		score += 120
+	}
+	if strings.Contains(target, query) {
+		score += 60
+	}
+
+	return score
 }
 
 func (b *browserModel) normalizeViewport(total int) {

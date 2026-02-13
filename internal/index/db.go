@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -329,7 +330,9 @@ func (d *DB) Search(query string, limit int) ([]SearchResult, error) {
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return dedupeSearchResults(results), nil
+	results = dedupeSearchResults(results)
+	sortSearchResultsByQuery(results, query)
+	return results, nil
 }
 
 // SearchInCollection performs FTS search filtered by collection.
@@ -373,7 +376,9 @@ func (d *DB) SearchInCollection(query string, collectionName string, limit int) 
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return dedupeSearchResults(results), nil
+	results = dedupeSearchResults(results)
+	sortSearchResultsByQuery(results, query)
+	return results, nil
 }
 
 func dedupeSearchResults(results []SearchResult) []SearchResult {
@@ -391,6 +396,118 @@ func dedupeSearchResults(results []SearchResult) []SearchResult {
 		uniq = append(uniq, r)
 	}
 	return uniq
+}
+
+func sortSearchResultsByQuery(results []SearchResult, query string) {
+	if len(results) < 2 {
+		return
+	}
+
+	tokens := tokenizeSearchTerms(query)
+	sort.SliceStable(results, func(i, j int) bool {
+		si := fuzzyScoreResult(tokens, results[i])
+		sj := fuzzyScoreResult(tokens, results[j])
+		if si == sj {
+			return strings.ToLower(results[i].Name) < strings.ToLower(results[j].Name)
+		}
+		return si > sj
+	})
+}
+
+func tokenizeSearchTerms(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var tokens []string
+	var b strings.Builder
+	flush := func() {
+		if b.Len() > 0 {
+			tokens = append(tokens, b.String())
+			b.Reset()
+		}
+	}
+	for _, r := range strings.ToLower(s) {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			b.WriteRune(r)
+		} else {
+			flush()
+		}
+	}
+	flush()
+	return tokens
+}
+
+func fuzzyScoreResult(tokens []string, r SearchResult) int {
+	if len(tokens) == 0 {
+		return 0
+	}
+	name := strings.ToLower(r.Name)
+	nameTokens := tokenizeSearchTerms(name)
+
+	nameTokenSet := make(map[string]struct{}, len(nameTokens))
+	for _, t := range nameTokens {
+		nameTokenSet[t] = struct{}{}
+	}
+
+	score := 0
+	matched := 0
+	for _, tok := range tokens {
+		if tok == "" {
+			continue
+		}
+		if _, ok := nameTokenSet[tok]; ok {
+			score += 120
+			matched++
+			continue
+		}
+
+		prefix := false
+		for _, nt := range nameTokens {
+			if strings.HasPrefix(nt, tok) {
+				prefix = true
+				break
+			}
+		}
+		if prefix {
+			score += 80
+			matched++
+			continue
+		}
+
+		if strings.Contains(name, tok) {
+			score += 40
+			matched++
+			continue
+		}
+
+		if isSubsequenceString(tok, name) {
+			score += 10
+		}
+	}
+
+	if matched == len(tokens) {
+		score += 200
+	}
+	if strings.Contains(name, strings.Join(tokens, " ")) {
+		score += 80
+	}
+
+	return score
+}
+
+func isSubsequenceString(needle, haystack string) bool {
+	if needle == "" {
+		return true
+	}
+	n := []rune(needle)
+	h := []rune(haystack)
+	j := 0
+	for i := 0; i < len(h) && j < len(n); i++ {
+		if h[i] == n[j] {
+			j++
+		}
+	}
+	return j == len(n)
 }
 
 // Stats returns index statistics.

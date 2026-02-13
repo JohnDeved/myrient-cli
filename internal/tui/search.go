@@ -19,6 +19,12 @@ type searchModel struct {
 	height     int
 	viewportRows int
 	searching  bool
+	bgRefreshing bool
+	bgMsg      string
+	bgPath     string
+	bgDirs     int64
+	bgFiles    int64
+	bgErrors   int64
 	startedAt  time.Time
 	loadingMsg string
 	loadingPath string
@@ -90,6 +96,12 @@ func (s *searchModel) setResults(results []index.SearchResult) {
 	s.cursor = 0
 	s.offset = 0
 	s.searching = false
+	s.bgRefreshing = false
+	s.bgMsg = ""
+	s.bgPath = ""
+	s.bgDirs = 0
+	s.bgFiles = 0
+	s.bgErrors = 0
 	s.startedAt = time.Time{}
 	s.loadingMsg = ""
 	s.loadingPath = ""
@@ -102,6 +114,12 @@ func (s *searchModel) setResults(results []index.SearchResult) {
 func (s *searchModel) setError(err error) {
 	s.err = err
 	s.searching = false
+	s.bgRefreshing = false
+	s.bgMsg = ""
+	s.bgPath = ""
+	s.bgDirs = 0
+	s.bgFiles = 0
+	s.bgErrors = 0
 	s.startedAt = time.Time{}
 	s.loadingMsg = ""
 	s.loadingPath = ""
@@ -194,6 +212,36 @@ func (s *searchModel) view(width int, spin string) string {
 	sb.WriteString("\n\n")
 	usedLines += 2
 
+	if s.bgRefreshing && !s.searching {
+		msg := s.bgMsg
+		if msg == "" {
+			msg = "Background index refresh running..."
+		}
+		sb.WriteString(padToWidth(helpStyle.Render("  Background Index Refresh"), width))
+		sb.WriteString("\n")
+		usedLines++
+		sb.WriteString(padToWidth(helpStyle.Render("  "+msg), width))
+		sb.WriteString("\n")
+		usedLines++
+		if s.bgPath != "" {
+			sb.WriteString(padToWidth(helpStyle.Render("  Current Path:"), width))
+			sb.WriteString("\n")
+			usedLines++
+			sb.WriteString(padToWidth(helpStyle.Render("    "+util.TruncatePath(s.bgPath, max(20, width-6))), width))
+			sb.WriteString("\n")
+			usedLines++
+		}
+		sb.WriteString(padToWidth(helpStyle.Render(fmt.Sprintf("  Indexed Dirs:  %d", s.bgDirs)), width))
+		sb.WriteString("\n")
+		usedLines++
+		sb.WriteString(padToWidth(helpStyle.Render(fmt.Sprintf("  Indexed Files: %d", s.bgFiles)), width))
+		sb.WriteString("\n")
+		usedLines++
+		sb.WriteString(padToWidth(helpStyle.Render(fmt.Sprintf("  Errors:        %d", s.bgErrors)), width))
+		sb.WriteString("\n\n")
+		usedLines += 2
+	}
+
 	if s.searching {
 		elapsed := ""
 		if !s.startedAt.IsZero() {
@@ -270,7 +318,7 @@ func (s *searchModel) view(width int, spin string) string {
 	sb.WriteString("\n\n")
 	usedLines += 2
 
-	resultDetailsLines := 0
+	resultDetailsLines := 2
 	scrollInfoLines := 0
 	if len(s.results) > s.pageSize() {
 		scrollInfoLines = 1
@@ -297,6 +345,13 @@ func (s *searchModel) view(width int, spin string) string {
 		isSelected := i == s.cursor
 		line := renderBrowseLikeRow(r.Name, r.Size, r.Date, false, rowWidth, isSelected)
 		sb.WriteString(line)
+		sb.WriteString("\n")
+	}
+
+	if sel := s.selected(); sel != nil {
+		sb.WriteString(padToWidth(helpStyle.Render("  Path: "+util.TruncatePath(sel.Path, max(20, width-10))), width))
+		sb.WriteString("\n")
+		sb.WriteString(padToWidth(helpStyle.Render("  Collection: "+sel.CollectionName), width))
 		sb.WriteString("\n")
 	}
 

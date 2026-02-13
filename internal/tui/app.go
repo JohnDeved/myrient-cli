@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"strings"
 	"time"
@@ -30,6 +31,7 @@ const (
 type entriesMsg struct {
 	entries []client.Entry
 	path    []string
+	dirPath string
 }
 
 type errMsg struct{ err error }
@@ -46,6 +48,17 @@ type searchResultsMsg struct {
 }
 
 type searchProgressTickMsg struct{}
+
+type browseIndexErrMsg struct{ err error }
+
+type indexRefreshDoneMsg struct {
+	dirs   int64
+	files  int64
+	errors int64
+}
+
+type indexRefreshErrMsg struct{ err error }
+type indexRefreshTickMsg struct{}
 
 type searchPreviewMsg struct {
 	query   string
@@ -96,6 +109,8 @@ type Model struct {
 	searchCrawler *index.Crawler
 	searchJob    *searchJob
 	searchLastRefresh time.Time
+	indexRefreshRunning bool
+	indexRefreshCrawler *index.Crawler
 }
 
 type RunOptions struct {
@@ -156,7 +171,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case entriesMsg:
 		m.browser.setPathAndEntries(msg.path, msg.entries)
-		return m, nil
+		return m, m.indexFromBrowseSnapshot(msg)
+
+	case browseIndexErrMsg:
+		return m, m.setStatus(fmt.Sprintf("Browse index update failed: %v", msg.err))
 
 	case errMsg:
 		m.browser.setError(msg.err)
@@ -207,6 +225,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.search.err = nil
 		return m, nil
+
+	case indexRefreshDoneMsg:
+		m.indexRefreshRunning = false
+		m.indexRefreshCrawler = nil
+		m.search.bgRefreshing = false
+		m.search.bgMsg = ""
+		m.search.bgPath = ""
+		m.searchLastRefresh = time.Now()
+		return m, m.setStatus(fmt.Sprintf("Background index refresh complete (%d dirs, %d files, %d errors)", msg.dirs, msg.files, msg.errors))
+
+	case indexRefreshErrMsg:
+		m.indexRefreshRunning = false
+		m.indexRefreshCrawler = nil
+		m.search.bgRefreshing = false
+		m.search.bgMsg = ""
+		m.search.bgPath = ""
+		return m, m.setStatus(fmt.Sprintf("Background index refresh failed: %v", msg.err))
+
+	case indexRefreshTickMsg:
+		if !m.indexRefreshRunning || m.indexRefreshCrawler == nil {
+			return m, nil
+		}
+		p := m.indexRefreshCrawler.Progress()
+		if p.CurrentPath != "" {
+			m.search.bgMsg = "Refreshing stale/unindexed paths..."
+			m.search.bgPath = p.CurrentPath
+		} else {
+			m.search.bgMsg = "Preparing background refresh..."
+			m.search.bgPath = ""
+		}
+		m.search.bgDirs = p.DirsProcessed
+		m.search.bgFiles = p.FilesFound
+		m.search.bgErrors = p.Errors
+		return m, m.indexRefreshTick()
 
 	case downloadUpdateMsg:
 		m.downloads.setItems(m.dlManager.Items())
@@ -336,6 +388,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case TabBrowse:
 			m.activeTab = TabSearch
 			m.search.input.Focus()
+			return m.maybeRefreshIndexInSearchTab()
 		case TabSearch:
 			m.activeTab = TabDownloads
 			m.downloads.setItems(m.dlManager.Items())
@@ -355,6 +408,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case TabDownloads:
 			m.activeTab = TabSearch
 			m.search.input.Focus()
+			return m.maybeRefreshIndexInSearchTab()
 		}
 		return m, nil
 	}
@@ -383,7 +437,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if msg.X >= 11 && msg.X <= 21 {
 				m.activeTab = TabSearch
 				m.search.input.Focus()
-				return m, nil
+				return m.maybeRefreshIndexInSearchTab()
 			}
 			if msg.X >= 22 && msg.X <= 36 {
 				m.activeTab = TabDownloads
@@ -498,6 +552,10 @@ func (m Model) handleSearchKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			}
 			query := m.search.input.Value()
 			if query != "" {
+				if m.indexRefreshRunning {
+					m.search.input.Blur()
+					return m, tea.Batch(m.setStatus("Index refresh already running; results update live"), m.previewSearch(strings.TrimSpace(query)))
+				}
 				m.search.searching = true
 				m.search.startedAt = time.Now()
 				m.search.loadingMsg = "Searching local index..."
@@ -665,7 +723,72 @@ func (m Model) loadDirectory(path string) tea.Cmd {
 			segments = strings.Split(path, "/")
 		}
 
-		return entriesMsg{entries: entries, path: segments}
+		return entriesMsg{entries: entries, path: segments, dirPath: path}
+	}
+}
+
+func (m Model) indexFromBrowseSnapshot(msg entriesMsg) tea.Cmd {
+	return func() tea.Msg {
+		if m.db == nil {
+			return nil
+		}
+
+		// Root listing: treat directories as collections and keep collection metadata fresh.
+		if len(msg.path) == 0 {
+			for _, e := range msg.entries {
+				if !e.IsDir {
+					continue
+				}
+				if _, err := m.db.UpsertCollection(e.Name, e.Name+"/", index.GetCollectionDescription(e.Name)); err != nil {
+					return browseIndexErrMsg{err: err}
+				}
+			}
+			return nil
+		}
+
+		collectionName := msg.path[0]
+		colID, err := m.db.UpsertCollection(collectionName, collectionName+"/", index.GetCollectionDescription(collectionName))
+		if err != nil {
+			return browseIndexErrMsg{err: err}
+		}
+
+		dirPath := msg.dirPath
+		if dirPath == "" {
+			dirPath = strings.Join(msg.path, "/") + "/"
+		}
+		dirID, err := m.db.UpsertDirectory(dirPath, colID)
+		if err != nil {
+			return browseIndexErrMsg{err: err}
+		}
+
+		if err := m.db.ClearDirectoryFiles(dirID); err != nil {
+			return browseIndexErrMsg{err: err}
+		}
+
+		files := make([]index.FileRecord, 0, len(msg.entries))
+		for _, e := range msg.entries {
+			if e.IsDir {
+				continue
+			}
+			files = append(files, index.FileRecord{
+				Name:         e.Name,
+				Path:         dirPath + e.Name,
+				URL:          e.URL,
+				Size:         e.Size,
+				Date:         e.Date,
+				DirectoryID:  dirID,
+				CollectionID: colID,
+			})
+		}
+		if len(files) > 0 {
+			if err := m.db.InsertFileBatch(files); err != nil {
+				return browseIndexErrMsg{err: err}
+			}
+		}
+		if err := m.db.MarkDirectoryCrawled(dirID); err != nil {
+			return browseIndexErrMsg{err: err}
+		}
+		return nil
 	}
 }
 
@@ -739,58 +862,136 @@ func (m Model) previewSearch(query string) tea.Cmd {
 	}
 }
 
-func chooseSearchRefreshCollections(db *index.DB, query string, local []index.SearchResult) []string {
-	seen := map[string]bool{}
-	ordered := make([]string, 0, 8)
-	add := func(name string) {
-		name = strings.TrimSpace(name)
-		if name == "" || seen[name] {
-			return
+func (m Model) maybeRefreshIndexInSearchTab() (tea.Model, tea.Cmd) {
+	if m.db == nil || m.indexRefreshRunning || m.search.searching {
+		return m, nil
+	}
+	if !m.searchLastRefresh.IsZero() && time.Since(m.searchLastRefresh) < 2*time.Minute {
+		return m, nil
+	}
+	crawler := index.NewCrawler(m.client, m.db, m.cfg.IndexStaleDays)
+	crawler.SetForce(false)
+	crawler.SetWorkers(8)
+	m.indexRefreshRunning = true
+	m.indexRefreshCrawler = crawler
+	m.search.bgRefreshing = true
+	m.search.bgMsg = "Preparing background refresh..."
+	m.search.bgPath = ""
+	m.search.bgDirs = 0
+	m.search.bgFiles = 0
+	m.search.bgErrors = 0
+	started := m.setStatus("Refreshing indexes in background for search...")
+	return m, tea.Batch(started, m.refreshIndexInBackground(crawler), m.indexRefreshTick())
+}
+
+func (m Model) refreshIndexInBackground(crawler *index.Crawler) tea.Cmd {
+	return func() tea.Msg {
+		if err := crawler.CrawlAll(context.Background()); err != nil {
+			return indexRefreshErrMsg{err: err}
 		}
-		seen[name] = true
-		ordered = append(ordered, name)
+		p := crawler.Progress()
+		return indexRefreshDoneMsg{dirs: p.DirsProcessed, files: p.FilesFound, errors: p.Errors}
 	}
+}
 
-	for _, r := range local {
-		add(r.CollectionName)
-	}
+func (m Model) indexRefreshTick() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(time.Time) tea.Msg {
+		return indexRefreshTickMsg{}
+	})
+}
 
+func chooseSearchRefreshCollections(db *index.DB, query string, local []index.SearchResult) []string {
 	cols, err := db.GetCollections()
-	if err == nil {
-		tokens := strings.Fields(strings.ToLower(query))
-		for _, c := range cols {
-			lc := strings.ToLower(c.Name)
-			for _, t := range tokens {
-				if len(t) < 2 {
-					continue
-				}
-				if strings.Contains(lc, t) {
-					add(c.Name)
-					break
-				}
+	if err != nil || len(cols) == 0 {
+		return []string{"No-Intro"}
+	}
+
+	tokens := strings.Fields(strings.ToLower(query))
+	localHits := map[string]int{}
+	for _, r := range local {
+		localHits[r.CollectionName]++
+	}
+
+	type scored struct {
+		name  string
+		score int
+	}
+	scoredCols := make([]scored, 0, len(cols))
+	for _, c := range cols {
+		s := scoreCollectionForQuery(strings.ToLower(c.Name), tokens)
+		s += localHits[c.Name] * 120
+		scoredCols = append(scoredCols, scored{name: c.Name, score: s})
+	}
+
+	sort.SliceStable(scoredCols, func(i, j int) bool {
+		if scoredCols[i].score == scoredCols[j].score {
+			return scoredCols[i].name < scoredCols[j].name
+		}
+		return scoredCols[i].score > scoredCols[j].score
+	})
+
+	maxCollections := 6
+	if len(local) == 0 {
+		maxCollections = 8
+	}
+	if maxCollections > len(scoredCols) {
+		maxCollections = len(scoredCols)
+	}
+
+	ordered := make([]string, 0, maxCollections)
+	for i := 0; i < maxCollections; i++ {
+		if scoredCols[i].score <= 0 && len(ordered) > 0 {
+			break
+		}
+		ordered = append(ordered, scoredCols[i].name)
+	}
+	if len(ordered) == 0 {
+		ordered = append(ordered, "No-Intro")
+	}
+	return ordered
+}
+
+func scoreCollectionForQuery(collectionLower string, tokens []string) int {
+	score := 0
+	for _, t := range tokens {
+		if len(t) < 2 {
+			continue
+		}
+		if strings.Contains(collectionLower, t) {
+			score += 80
+		}
+	}
+
+	has := func(v string) bool { return strings.Contains(collectionLower, v) }
+
+	for _, t := range tokens {
+		switch t {
+		case "nds", "nintendo", "ds", "3ds", "switch", "pokemon", "zelda", "mario", "kirby", "metroid", "fire", "emblem":
+			if has("no-intro") {
+				score += 220
+			}
+		case "ps1", "ps2", "ps3", "psp", "psx", "dreamcast", "gamecube", "wii", "xbox", "dvd", "cd", "blu", "ray":
+			if has("redump") {
+				score += 220
+			}
+		case "arcade", "mame", "neo", "cps", "naomi":
+			if has("mame") || has("finalburn") {
+				score += 220
+			}
+		case "dos", "pc", "windows", "msdos":
+			if has("dos") || has("total dos") {
+				score += 220
 			}
 		}
 	}
 
-	q := strings.ToLower(query)
-	if strings.Contains(q, "3ds") || strings.Contains(q, "ds") || strings.Contains(q, "pokemon") || strings.Contains(q, "zelda") || strings.Contains(q, "mario") {
-		add("No-Intro")
-	}
-	if strings.Contains(q, "arcade") || strings.Contains(q, "mame") {
-		add("MAME")
-		add("FinalBurn Neo")
-	}
-	if strings.Contains(q, "dos") || strings.Contains(q, "pc") {
-		add("Total DOS Collection")
+	if len(tokens) == 0 {
+		if has("no-intro") {
+			score += 40
+		}
 	}
 
-	if len(ordered) == 0 {
-		add("No-Intro")
-	}
-	if len(ordered) > 4 {
-		ordered = ordered[:4]
-	}
-	return ordered
+	return score
 }
 
 func crawlSelectedCollections(ctx context.Context, crawler *index.Crawler, collections []string) error {
