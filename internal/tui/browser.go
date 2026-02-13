@@ -35,11 +35,52 @@ func (b *browserModel) visibleIndices() []int {
 	indices := make([]int, 0, len(b.entries))
 	q := strings.ToLower(strings.TrimSpace(b.filter))
 	for i, e := range b.entries {
-		if q == "" || strings.Contains(strings.ToLower(e.Name), q) {
+		if q == "" || fuzzyMatch(q, e.Name) {
 			indices = append(indices, i)
 		}
 	}
 	return indices
+}
+
+func fuzzyMatch(query, target string) bool {
+	query = strings.ToLower(strings.TrimSpace(query))
+	target = strings.ToLower(target)
+	if query == "" {
+		return true
+	}
+
+	qTokens := strings.Fields(query)
+	if len(qTokens) == 0 {
+		return true
+	}
+
+	for _, tok := range qTokens {
+		if tok == "" {
+			continue
+		}
+		if strings.Contains(target, tok) {
+			continue
+		}
+		if !isSubsequence(tok, target) {
+			return false
+		}
+	}
+	return true
+}
+
+func isSubsequence(needle, haystack string) bool {
+	if needle == "" {
+		return true
+	}
+	n := []rune(needle)
+	h := []rune(haystack)
+	j := 0
+	for i := 0; i < len(h) && j < len(n); i++ {
+		if h[i] == n[j] {
+			j++
+		}
+	}
+	return j == len(n)
 }
 
 func (b *browserModel) normalizeViewport(total int) {

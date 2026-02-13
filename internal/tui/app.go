@@ -47,6 +47,12 @@ type searchResultsMsg struct {
 
 type searchProgressTickMsg struct{}
 
+type searchPreviewMsg struct {
+	query   string
+	results []index.SearchResult
+	err     error
+}
+
 type searchJob struct {
 	mu      sync.Mutex
 	results []index.SearchResult
@@ -180,6 +186,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.setStatus("Refreshed index, but no matches found")
 		}
+		return m, nil
+
+	case searchPreviewMsg:
+		// Ignore stale preview results if input changed since dispatch.
+		if strings.TrimSpace(msg.query) != strings.TrimSpace(m.search.input.Value()) {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.search.setError(msg.err)
+			return m, nil
+		}
+		m.search.lastQuery = msg.query
+		m.search.results = msg.results
+		m.search.totalFound = len(msg.results)
+		m.search.normalizeViewport()
+		if len(msg.results) == 0 {
+			m.search.cursor = 0
+			m.search.offset = 0
+		}
+		m.search.err = nil
 		return m, nil
 
 	case downloadUpdateMsg:
@@ -502,8 +528,25 @@ func (m Model) handleSearchKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			return m, nil
 		default:
 			var cmd tea.Cmd
+			before := m.search.input.Value()
 			m.search.input, cmd = m.search.input.Update(msg)
-			return m, cmd
+			after := strings.TrimSpace(m.search.input.Value())
+			if m.search.searching {
+				return m, cmd
+			}
+			if before == m.search.input.Value() {
+				return m, cmd
+			}
+			if after == "" {
+				m.search.lastQuery = ""
+				m.search.results = nil
+				m.search.totalFound = 0
+				m.search.cursor = 0
+				m.search.offset = 0
+				m.search.err = nil
+				return m, cmd
+			}
+			return m, tea.Batch(cmd, m.previewSearch(after))
 		}
 	} else {
 		switch key {
@@ -686,6 +729,16 @@ func (m Model) performSearch(query string, crawler *index.Crawler, job *searchJo
 	}
 }
 
+func (m Model) previewSearch(query string) tea.Cmd {
+	return func() tea.Msg {
+		if m.db == nil {
+			return searchPreviewMsg{query: query}
+		}
+		results, err := m.db.Search(query, 100)
+		return searchPreviewMsg{query: query, results: results, err: err}
+	}
+}
+
 func chooseSearchRefreshCollections(db *index.DB, query string, local []index.SearchResult) []string {
 	seen := map[string]bool{}
 	ordered := make([]string, 0, 8)
@@ -812,16 +865,22 @@ func (m Model) View() string {
 
 	// Content area.
 	if m.showHelp {
-		sb.WriteString(m.helpView(m.height - 8))
+		sb.WriteString(fitToHeight(m.helpView(m.height-8), m.height-8))
 	} else {
+		contentHeight := m.height - 8
+		if contentHeight < 1 {
+			contentHeight = 1
+		}
+		content := ""
 		switch m.activeTab {
 		case TabBrowse:
-			sb.WriteString(m.browser.view(m.width, m.spinner.View()))
+			content = m.browser.view(m.width, m.spinner.View())
 		case TabSearch:
-			sb.WriteString(m.search.view(m.width, m.spinner.View()))
+			content = m.search.view(m.width, m.spinner.View())
 		case TabDownloads:
-			sb.WriteString(m.downloads.view(m.width))
+			content = m.downloads.view(m.width)
 		}
+		sb.WriteString(fitToHeight(content, contentHeight))
 	}
 
 	// Status bar.
@@ -835,6 +894,23 @@ func (m Model) View() string {
 	sb.WriteString(statusBarStyle.Width(m.width).Render(statusLine))
 
 	return sb.String()
+}
+
+func fitToHeight(content string, maxLines int) string {
+	if maxLines <= 0 {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+	}
+	for len(lines) < maxLines {
+		lines = append(lines, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (m Model) defaultStatus() string {

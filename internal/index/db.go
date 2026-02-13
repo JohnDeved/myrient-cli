@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	_ "modernc.org/sqlite"
 )
@@ -135,37 +136,33 @@ func sanitizeFTS5Query(query string) string {
 		return ""
 	}
 
-	// Split into words and quote each individually.
-	// This turns `mario (usa)` into `"mario" "usa"` which FTS5 treats as AND.
+	// Split into words and apply prefix matching to each token.
+	// This turns `pokemon di` into `pokemon* di*` and matches
+	// names like `Pokemon - Diamond`.
 	words := strings.Fields(query)
-	var quoted []string
+	var terms []string
 	for _, w := range words {
-		// Remove any characters that have no business being in a search term.
 		w = strings.TrimSpace(w)
 		if w == "" {
 			continue
 		}
-		// Escape embedded double quotes by doubling them.
-		w = strings.ReplaceAll(w, `"`, `""`)
-		// Strip FTS5 operators that would confuse the parser.
-		w = strings.NewReplacer(
-			"(", "",
-			")", "",
-			"[", "",
-			"]", "",
-			"{", "",
-			"}", "",
-			"^", "",
-		).Replace(w)
+
+		var sb strings.Builder
+		for _, r := range w {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
+				sb.WriteRune(unicode.ToLower(r))
+			}
+		}
+		w = sb.String()
 		if w == "" {
 			continue
 		}
-		quoted = append(quoted, `"`+w+`"`)
+		terms = append(terms, w+"*")
 	}
-	if len(quoted) == 0 {
+	if len(terms) == 0 {
 		return ""
 	}
-	return strings.Join(quoted, " ")
+	return strings.Join(terms, " ")
 }
 
 // UpsertCollection inserts or updates a collection and returns its ID.
