@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"strings"
@@ -202,13 +201,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.search.searching {
 			return m, nil
 		}
-		if m.searchJob != nil {
-			live := m.searchJob.getResults()
-			if len(live) > 0 {
-				m.search.results = live
-				m.search.totalFound = len(live)
-				m.search.normalizeViewport()
+		if m.searchJob != nil && m.db != nil && strings.TrimSpace(m.search.lastQuery) != "" {
+			live, err := m.db.Search(m.search.lastQuery, 100)
+			if err == nil {
+				m.searchJob.setResults(live)
 			}
+			live = m.searchJob.getResults()
+			m.search.results = live
+			m.search.totalFound = len(live)
+			m.search.normalizeViewport()
 		}
 		if m.searchCrawler != nil {
 			p := m.searchCrawler.Progress()
@@ -490,7 +491,7 @@ func (m Model) handleSearchKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 				m.searchCrawler = crawler
 				job := &searchJob{}
 				m.searchJob = job
-				started := m.setStatus("Search started: local results first, then targeted stale refresh")
+				started := m.setStatus("Search started: local results first, then full indexing to ensure complete coverage")
 				return m, tea.Batch(started, m.performSearch(query, crawler, job), m.searchProgressTick())
 			}
 		case "up", "down", "pgup", "pgdown":
@@ -637,33 +638,31 @@ func (m Model) performSearch(query string, crawler *index.Crawler, job *searchJo
 		}
 		job.setResults(localResults)
 
-		if len(localResults) >= 25 && !m.searchLastRefresh.IsZero() && time.Since(m.searchLastRefresh) < 2*time.Minute {
-			return searchResultsMsg{
-				results:     localResults,
-				query:       query,
-				localCount:  len(localResults),
-				refreshWarn: "Using recent index snapshot for speed",
-			}
-		}
-
-		budget := 40 * time.Second
-		if len(localResults) > 0 {
-			budget = 15 * time.Second
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), budget)
-		defer cancel()
-
 		collections := chooseSearchRefreshCollections(m.db, query, localResults)
-		if err := crawlSelectedCollections(ctx, crawler, collections); err != nil {
-			warn := fmt.Sprintf("Index refresh failed, showing local results: %v", err)
-			if errors.Is(err, context.DeadlineExceeded) {
-				warn = "Index refresh timed out, showing best available results"
-			}
+		if err := crawlSelectedCollections(context.Background(), crawler, collections); err != nil {
 			return searchResultsMsg{
 				results:     localResults,
 				query:       query,
 				localCount:  len(localResults),
-				refreshWarn: warn,
+				refreshWarn: fmt.Sprintf("Targeted refresh failed, showing local results: %v", err),
+			}
+		}
+
+		midResults, err := m.db.Search(query, 100)
+		if err == nil {
+			job.setResults(midResults)
+		}
+
+		if err := crawler.CrawlAll(context.Background()); err != nil {
+			results, serr := m.db.Search(query, 100)
+			if serr != nil {
+				results = job.getResults()
+			}
+			return searchResultsMsg{
+				results:     results,
+				query:       query,
+				localCount:  len(localResults),
+				refreshWarn: fmt.Sprintf("Full refresh interrupted: %v", err),
 			}
 		}
 
@@ -761,7 +760,7 @@ func crawlSelectedCollections(ctx context.Context, crawler *index.Crawler, colle
 }
 
 func (m Model) searchProgressTick() tea.Cmd {
-	return tea.Tick(30*time.Millisecond, func(time.Time) tea.Msg {
+	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg {
 		return searchProgressTickMsg{}
 	})
 }

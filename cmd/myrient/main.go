@@ -72,6 +72,8 @@ from myrient.erista.me directly in your terminal.`,
 	indexCmd.Flags().String("collection", "", "Only index a specific collection (e.g. 'No-Intro')")
 	indexCmd.Flags().Bool("force", false, "Force re-crawling even when directories are not stale")
 	indexCmd.Flags().Int("workers", 4, "Number of collections to crawl in parallel")
+	indexCmd.Flags().Bool("clear-db", false, "Delete local index database before indexing")
+	indexCmd.Flags().Bool("clear-only", false, "Delete local index database and exit")
 
 	// Search command
 	searchCmd := &cobra.Command{
@@ -274,6 +276,18 @@ func runIndex(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
+	clearDB, _ := cmd.Flags().GetBool("clear-db")
+	clearOnly, _ := cmd.Flags().GetBool("clear-only")
+	if clearDB || clearOnly {
+		if err := clearLocalIndexDB(); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Cleared local index database at %s\n", config.DBPath())
+		if clearOnly {
+			return nil
+		}
+	}
+
 	c := client.New(cfg.BaseURL, cfg.RequestsPerSecond)
 
 	db, err := index.OpenDB(config.DBPath())
@@ -313,6 +327,17 @@ func runIndex(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stderr, "\n\nDone! Indexed %d directories, %d files (%d errors)\n",
 		p.DirsProcessed, p.FilesFound, p.Errors)
 
+	return nil
+}
+
+func clearLocalIndexDB() error {
+	dbPath := config.DBPath()
+	paths := []string{dbPath, dbPath + "-wal", dbPath + "-shm"}
+	for _, p := range paths {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("clearing index DB file %s: %w", p, err)
+		}
+	}
 	return nil
 }
 
