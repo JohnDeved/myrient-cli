@@ -140,12 +140,25 @@ func parseDirectoryListing(r io.Reader, dirURL string) ([]Entry, error) {
 	}
 
 	var entries []Entry
+	seen := map[string]struct{}{}
 	var walk func(*html.Node)
 	walk = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "tr" {
 			entry, ok := parseTableRow(n, dirURL)
 			if ok {
-				entries = append(entries, entry)
+				if _, exists := seen[entry.URL]; !exists {
+					seen[entry.URL] = struct{}{}
+					entries = append(entries, entry)
+				}
+			}
+		}
+		if n.Type == html.ElementNode && n.Data == "a" {
+			entry, ok := parseAnchorLink(n, dirURL)
+			if ok {
+				if _, exists := seen[entry.URL]; !exists {
+					seen[entry.URL] = struct{}{}
+					entries = append(entries, entry)
+				}
 			}
 		}
 		for child := n.FirstChild; child != nil; child = child.NextSibling {
@@ -166,8 +179,7 @@ func parseTableRow(tr *html.Node, dirURL string) (Entry, bool) {
 		}
 	}
 
-	// We expect at least 3 cells: name, size, date.
-	if len(cells) < 3 {
+	if len(cells) < 1 {
 		return Entry{}, false
 	}
 
@@ -196,14 +208,19 @@ func parseTableRow(tr *html.Node, dirURL string) (Entry, bool) {
 		name = decoded
 	}
 
-	// Build full URL.
-	fullURL := dirURL + link
+	fullURL, err := resolveURL(dirURL, link)
+	if err != nil {
+		return Entry{}, false
+	}
 
-	// Extract size text.
-	sizeText := textContent(cells[1])
-
-	// Extract date text.
-	dateText := textContent(cells[2])
+	sizeText := ""
+	dateText := ""
+	if len(cells) > 1 {
+		sizeText = textContent(cells[1])
+	}
+	if len(cells) > 2 {
+		dateText = textContent(cells[2])
+	}
 
 	return Entry{
 		Name:  name,
@@ -212,6 +229,72 @@ func parseTableRow(tr *html.Node, dirURL string) (Entry, bool) {
 		Date:  strings.TrimSpace(dateText),
 		IsDir: isDir,
 	}, true
+}
+
+func parseAnchorLink(a *html.Node, dirURL string) (Entry, bool) {
+	link, name := findLink(a)
+	if link == "" {
+		return Entry{}, false
+	}
+	if strings.HasPrefix(link, "#") || strings.HasPrefix(link, "?") {
+		return Entry{}, false
+	}
+	if strings.HasPrefix(strings.ToLower(link), "javascript:") {
+		return Entry{}, false
+	}
+	if name == "" {
+		name = strings.TrimSuffix(pathBase(link), "/")
+	}
+	if name == "" || name == "." || name == ".." || link == "../" || link == "./" {
+		return Entry{}, false
+	}
+	if strings.EqualFold(strings.TrimSpace(name), "Parent Directory") ||
+		strings.EqualFold(strings.TrimSpace(name), "Parent directory/") {
+		return Entry{}, false
+	}
+	name = strings.TrimSuffix(name, "/")
+	if decoded, err := url.PathUnescape(name); err == nil {
+		name = decoded
+	}
+	fullURL, err := resolveURL(dirURL, link)
+	if err != nil {
+		return Entry{}, false
+	}
+	return Entry{
+		Name:  strings.TrimSpace(name),
+		URL:   fullURL,
+		Size:  "",
+		Date:  "",
+		IsDir: strings.HasSuffix(link, "/"),
+	}, true
+}
+
+func resolveURL(base, ref string) (string, error) {
+	baseURL, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	relURL, err := url.Parse(ref)
+	if err != nil {
+		return "", err
+	}
+	return baseURL.ResolveReference(relURL).String(), nil
+}
+
+func pathBase(link string) string {
+	parsed, err := url.Parse(link)
+	if err != nil {
+		return ""
+	}
+	path := parsed.Path
+	path = strings.TrimSuffix(path, "/")
+	if path == "" {
+		return ""
+	}
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		return path[i+1:]
+	}
+	return path
 }
 
 // findLink finds the first <a> tag in a node tree and returns (href, text).
