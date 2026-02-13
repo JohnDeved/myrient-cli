@@ -375,34 +375,14 @@ func (b *browserModel) view(width int, spin string) string {
 	}
 
 	// Render entries.
+	rowWidth := width - selectedStyle.GetHorizontalFrameSize()
+	if rowWidth < 12 {
+		rowWidth = 12
+	}
 	for i := b.offset; i < end; i++ {
 		e := b.entries[visible[i]]
 		isSelected := i == b.cursor
-
-		// Build the line.
-		var icon string
-		var displayName string
-		if e.IsDir {
-			icon = " "
-			displayName = dirStyle.Render(truncateText(e.Name+"/", max(12, width-35)))
-		} else {
-			icon = " "
-			displayName = fileStyle.Render(truncateText(e.Name, max(12, width-35)))
-		}
-
-		line := fmt.Sprintf("  %s%s  %s  %s",
-			icon,
-			displayName,
-			sizeStyle.Render(e.Size),
-			dateStyle.Render(e.Date),
-		)
-
-		if isSelected {
-			line = selectedStyle.Render(padToWidth(line, width))
-		} else {
-			line = normalStyle.Render(padToWidth(line, width))
-		}
-
+		line := renderBrowseLikeRow(e.Name, e.Size, e.Date, e.IsDir, rowWidth, isSelected)
 		sb.WriteString(line)
 		sb.WriteString("\n")
 	}
@@ -417,6 +397,30 @@ func (b *browserModel) view(width int, spin string) string {
 	}
 
 	return sb.String()
+}
+
+func renderBrowseLikeRow(name, size, date string, isDir bool, rowWidth int, isSelected bool) string {
+	var icon string
+	var displayName string
+	if isDir {
+		icon = " "
+		displayName = dirStyle.Render(truncateText(name+"/", max(12, rowWidth-35)))
+	} else {
+		icon = " "
+		displayName = fileStyle.Render(truncateText(name, max(12, rowWidth-35)))
+	}
+
+	line := fmt.Sprintf("  %s%s  %s  %s",
+		icon,
+		displayName,
+		sizeStyle.Render(size),
+		dateStyle.Render(date),
+	)
+
+	if isSelected {
+		return selectedStyle.Render(padToWidth(line, rowWidth))
+	}
+	return normalStyle.Render(padToWidth(line, rowWidth))
 }
 
 func truncateText(s string, maxWidth int) string {

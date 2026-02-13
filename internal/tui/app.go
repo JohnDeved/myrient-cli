@@ -202,12 +202,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if len(live) > 0 {
 				m.search.results = live
 				m.search.totalFound = len(live)
-				if m.search.cursor >= len(m.search.results) {
-					m.search.cursor = len(m.search.results) - 1
-					if m.search.cursor < 0 {
-						m.search.cursor = 0
-					}
-				}
+				m.search.normalizeViewport()
 			}
 		}
 		if m.searchCrawler != nil {
@@ -379,9 +374,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case TabBrowse:
 			m.browser.moveUp()
 		case TabSearch:
-			if !m.search.input.Focused() {
-				m.search.moveUp()
-			}
+			m.search.moveUp()
 		case TabDownloads:
 			m.downloads.moveUp()
 		}
@@ -394,9 +387,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case TabBrowse:
 			m.browser.moveDown()
 		case TabSearch:
-			if !m.search.input.Focused() {
-				m.search.moveDown()
-			}
+			m.search.moveDown()
 		case TabDownloads:
 			m.downloads.moveDown()
 		}
@@ -479,13 +470,26 @@ func (m Model) handleSearchKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 				m.search.startedAt = time.Now()
 				m.search.loadingMsg = "Searching local index..."
 				m.search.lastQuery = query
+				m.search.cursor = 0
+				m.search.offset = 0
+				m.search.results = nil
+				m.search.totalFound = 0
+				m.search.loadingPath = ""
+				m.search.loadingDirs = 0
+				m.search.loadingFiles = 0
+				m.search.loadingErrors = 0
+				m.search.input.Blur()
 				crawler := index.NewCrawler(m.client, m.db, m.cfg.IndexStaleDays)
 				crawler.SetForce(true)
 				m.searchCrawler = crawler
 				job := &searchJob{}
 				m.searchJob = job
-				return m, tea.Batch(m.performSearch(query, crawler, job), m.searchProgressTick())
+				started := m.setStatus("Search started: local results first, then full index refresh")
+				return m, tea.Batch(started, m.performSearch(query, crawler, job), m.searchProgressTick())
 			}
+		case "up", "down", "pgup", "pgdown":
+			m.search.input.Blur()
+			return m.handleSearchKey(key, msg)
 		case "esc":
 			m.search.input.Blur()
 			return m, nil
@@ -496,14 +500,23 @@ func (m Model) handleSearchKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 		}
 	} else {
 		switch key {
-		case "up", "k":
+		case "up":
 			m.search.moveUp()
-		case "down", "j":
+		case "down":
 			m.search.moveDown()
 		case "pgup", "ctrl+u":
 			m.search.pageUp()
 		case "pgdown", "ctrl+d":
 			m.search.pageDown()
+		case "home":
+			m.search.cursor = 0
+			m.search.offset = 0
+		case "end":
+			m.search.cursor = len(m.search.results) - 1
+			if m.search.cursor < 0 {
+				m.search.cursor = 0
+			}
+			m.search.normalizeViewport()
 		case "enter":
 			// Download selected result.
 			if sel := m.search.selected(); sel != nil {
@@ -511,10 +524,6 @@ func (m Model) handleSearchKey(key string, msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			}
 		case "i", "/":
 			m.search.input.Focus()
-		case "d":
-			if sel := m.search.selected(); sel != nil {
-				return m, m.enqueueDownload(sel.Name, sel.URL, sel.CollectionName)
-			}
 		case "o", "b":
 			if sel := m.search.selected(); sel != nil {
 				m.activeTab = TabBrowse
@@ -734,7 +743,7 @@ func (m Model) defaultStatus() string {
 	case TabBrowse:
 		return "Arrows:navigate  Enter:open/download  type:filter  Backspace/Esc:clear filter  ?:help"
 	case TabSearch:
-		return "/:focus search  j/k:navigate results  Enter/d:download  b:open in browser  ?:help"
+		return "/:focus search  Arrows:results  Home/End/PgUp/PgDn:scroll  Enter:download  b:open in browser  ?:help"
 	case TabDownloads:
 		return "j/k:navigate  p:pause/resume  c:cancel  R:retry failed  x:clear done  r:refresh  ?:help"
 	}
@@ -764,8 +773,10 @@ func (m Model) helpView(maxLines int) string {
 		"  Search:",
 		"    / or i        Focus search input",
 		"    Enter         Search (when input focused)",
-		"    j/k           Navigate results",
-		"    d / Enter     Download selected",
+		"    Up/Down       Navigate results",
+		"    Home/End      Go to top/bottom",
+		"    PgUp / PgDn   Page up/down",
+		"    Enter         Download selected",
 		"    b / o         Open selected path in browser",
 		"",
 		"  Downloads:",
