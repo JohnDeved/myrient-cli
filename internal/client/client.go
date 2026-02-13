@@ -343,9 +343,6 @@ func isLikelyListingEntryURL(dirURL, fullURL string) bool {
 	if !strings.HasSuffix(basePath, "/") {
 		basePath += "/"
 	}
-	if target.Path == basePath {
-		return false
-	}
 	return strings.HasPrefix(target.Path, basePath)
 }
 
