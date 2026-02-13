@@ -141,31 +141,43 @@ func parseDirectoryListing(r io.Reader, dirURL string) ([]Entry, error) {
 
 	var entries []Entry
 	seen := map[string]struct{}{}
-	var walk func(*html.Node)
-	walk = func(n *html.Node) {
+	addEntry := func(entry Entry) {
+		if _, exists := seen[entry.URL]; !exists {
+			seen[entry.URL] = struct{}{}
+			entries = append(entries, entry)
+		}
+	}
+
+	var walkRows func(*html.Node)
+	walkRows = func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "tr" {
 			entry, ok := parseTableRow(n, dirURL)
 			if ok {
-				if _, exists := seen[entry.URL]; !exists {
-					seen[entry.URL] = struct{}{}
-					entries = append(entries, entry)
-				}
-			}
-		}
-		if n.Type == html.ElementNode && n.Data == "a" {
-			entry, ok := parseAnchorLink(n, dirURL)
-			if ok {
-				if _, exists := seen[entry.URL]; !exists {
-					seen[entry.URL] = struct{}{}
-					entries = append(entries, entry)
-				}
+				addEntry(entry)
 			}
 		}
 		for child := n.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
+			walkRows(child)
 		}
 	}
-	walk(doc)
+	walkRows(doc)
+	if len(entries) > 0 {
+		return entries, nil
+	}
+
+	var walkAnchors func(*html.Node)
+	walkAnchors = func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "a" {
+			entry, ok := parseAnchorLink(n, dirURL)
+			if ok {
+				addEntry(entry)
+			}
+		}
+		for child := n.FirstChild; child != nil; child = child.NextSibling {
+			walkAnchors(child)
+		}
+	}
+	walkAnchors(doc)
 
 	return entries, nil
 }

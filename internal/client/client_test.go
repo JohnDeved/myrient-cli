@@ -11,6 +11,7 @@ func TestParseDirectoryListing_TableAndAnchorDedup(t *testing.T) {
 <table>
   <tr><td><a href="game.zip">game.zip</a></td><td>1.2M</td><td>2026-01-01</td></tr>
 </table>
+<a href="https://example.com/help">help</a>
 </body></html>`
 
 	entries, err := parseDirectoryListing(strings.NewReader(html), "https://example.com/No-Intro/")
